@@ -33,10 +33,11 @@ If you just want to inference and not train your own datasets, you can modify an
 
 
 ## Training
-The backbone RPconvformer
-![image](pc/strut.png)
+The backbone STGMT
+![image](pc/framework.png)
 
-The [moudels.py](moudels.py) and [framework.py](framework.py) are the most important componets in this project. Moerover, You can come up with some innovative and great ideas and you can also can change the hyperparmetes in the [Hyperparameter.py](Hyperparameter.py) if you like .So you can finally train the network by running the following command:
+The [layer.py](layer.py) and [framework.py](framework.py) are the most important componets in this project. Moerover, You can come up with some innovative and great ideas and you can also can change the hyperparmetes in the [Hyperparameters.py](Hyperparameters.py) if you like .Before train your own datasets, you can just change the [train.py](train.py), `line 24` you can change your datasets path from [Hyperparameters.py](Hyperparameters.py), `line 53`, l2 loss is used and `line 55`, l1 loss is used if the datasets are senstive.
+So you can finally train the model by running the following command:
 ```
 python train.py
 ```
@@ -44,50 +45,30 @@ You will get a new file of your own trained weights saved in `ckpt` folders.Don'
 
 
 ## Testing 
-
-After a long and hard training, you will get a good traffic flow prediction model,please try to run the [test.py], 
-
-You need to pay attention that the model takes up a lot of video memory, so there is no need to feed too much data at one time, please modify line30 and line31 according to the configuration.
-
-In the end, several `xlsx` files will be generated under the project. You can use a clumsy method to splicing them in `excel` like me, or you can write an automatic splicing program based on `pandas` for splicing.
-
-If you want more information, copy the concatenated table under [Baselinemodel](Baselinemodel) and run the following:
+If you only want to inferrence on our dataset, it doesn't matter. Take the dataset in New York as an example, PEMS08 performs the same operation
+The [test.py](test.py) is the kernel, before testing, the operation as follows
 ```
-python visual_transformer.py
+change the data path-> line 16
+change the graph name -> line 24 
+change the test epoch is up to you -> line 32
+change the data you want to save -> line 66, line 72
+python test.py
 ```
-We provide three evaluation metrics, MAE, MSE, and MAPE, 
-which are evaluated on multi-step predictions, 
-and the evaluations of our model and the baseline model are saved in 
-[Baselinemodel/each_step_metrics_pems04](Baselinemodel/each_step_metrics_pems04) and [Baselinemodel/each_step_metrics_pems08](Baselinemodel/each_step_metrics_pems08).
+We provide three metrics: `MAE`, `RMSE`, and `SMAPE`
+
+In the end, the terminate will show the results of `3,6,9,12` steps errors and average errors of each steps. Three tables will saved into your project `multi_error_our.csv', 'pred.csv', and  `gt.csv`
+
 
 ## Results
-Some visualization results as follow:
+The result of the NYC prediction:
 
 
-**Data anlysis**
 
-![image](pc/data_anlysis.png)
+![image](pc/visual.png)
 
-
-**comparsion on different methods**
-
-![image](pc/comparsion.png)
-
-**visual flow**
-
-![image](pc/results.png)
-
-
-**random mask**
-
-![image](pc/radom_mask.png)
-
+More details please see the paper!
 
 ## Contributing
-
-Most of the code comes from [Kyubyong/transformer](https://github.com/Kyubyong/transformer))
-
-The inspiration of this article comes from these [paper](https://arxiv.org/abs/1907.00235) and [paper](https://arxiv.org/abs/1803.02155)
 
 
 At last, thank you very much for the contribution of the co-author in the article, and also thank my girlfriend for giving me the courage to pursue for a Ph.d.
