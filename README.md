@@ -20,10 +20,13 @@ Not only is spatiotemporal traffic prediction one of the important tasks of inte
 
 ## Preliminary
 Before entering this project, you may need to configure the environment based on `Tensorflow2.x-gpu`.
+```
+pip install node2vec
+```
 
 ### Dataset
 
-Before training, please run the [data_store.py](data_store.py) to generate PEMS04 and PEMSD8 data files respectively.pkl.
+If you want to run this project, please download the datasets and weight file from  the [Goole](https://drive.google.com/drive/folders/1Dcsf1Y9MIQzZ6Th9abmNb4F9mlpZ2GpV?usp=sharingy).
 Moreover, if you want to change something, you can change the hyperparameters in [Hyperparameter.py](Hyperparameter.py) (Line 16& Line17), and you also
 can change the [data_store.py](data_store.py)(Line 67& Line 68), the second parameters for different links and the third parameters for different traffic features,
 such as flow, occupy, and speed.
