@@ -1,4 +1,4 @@
-# STGMT-Tensorflow-implementation
+# STGMT-Tensorflow2-implementation
 Traffic prediction based on spatiotemporal-guided multi graph Sandwich-Transformer(STGMT)
 
 
