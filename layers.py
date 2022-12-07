@@ -4,324 +4,470 @@
 # @IDE : Pycharm
 # @FileName : layers
 # @Project Name :metacode
-# import tensorflow as tf
-import tensorflow.compat.v1 as tf
-tf.disable_v2_behavior()
+import tensorflow as tf
 import numpy as np
 from Hyperparameters import Hyperparameters as hp
+from operations import *
 
-def projection(x):
-    """
+class Projection(tf.keras.layers.Layer):
+    def __init__(self,d_model,**kwargs):
+        '''
+        Non-Linear transformation of historical input
+        Args:
+            d_model: transform dimension
+            **kwargs: None
+        '''
+        super(Projection,self).__init__(**kwargs)
+        self.d_model = d_model
+        self.project = tf.keras.layers.Dense(self.d_model,activation=tf.keras.activations.relu,use_bias=False)
+    def call(self,inp):
+        return self.project(inp)
 
-    :param x: inputs->(?,T,N,C)
-    :return: (?,T,N,d)
-    """
-    return tf.layers.dense(x,hp.num_units,activation=tf.nn.leaky_relu)
+class Temporal_embedding_layer(tf.keras.layers.Layer):
+    def __init__(self,d_model,t_len,**kwargs):
+        '''
+        Te with time2vec->(B,T,N,D)
+        Args:
+            d_model: a value
+            t_len: a value
+            **kwargs:
+        '''
+        super(Temporal_embedding_layer,self).__init__(**kwargs)
+        self.d_model = d_model
+        self.t_len = t_len
+        self.dense1 = tf.keras.layers.Dense(1,activation=tf.keras.activations.linear,use_bias=True)
+        self.dense2 = tf.keras.layers.Dense(self.d_model,activation=tf.keras.activations.linear,use_bias=True)
+        self.concat = tf.keras.layers.Concatenate(axis=-1)
+        self.dense3 = tf.keras.layers.Dense(self.d_model,activation=tf.keras.activations.linear,use_bias=False)
+        self.dense4 = tf.keras.layers.Dense(self.d_model,activation=tf.keras.activations.linear,use_bias=False)
+    def call(self,inp):
+        B,T,N,C = get_shape(inp)
+        inp_ = tf.reshape(tf.transpose(inp,perm=[0,2,1,3]),(-1,T,C))
+        origin = self.dense1(inp_)
+        sin_ = tf.math.sin(self.dense2(inp_))
+        te_out = self.concat((sin_,origin))
+        te_out = self.dense3(te_out)
+        out_ = tf.transpose(tf.reshape(te_out, (-1, N, T, self.d_model)), perm=[0, 2, 1, 3])
+        out_ += positional_embedding(self.t_len, self.d_model)
+        out_ = self.dense4(out_)
+        return out_
 
-def meta_guide_transform(qkv,weights):
-    """
+class Spatial_embedding_layers(tf.keras.layers.Layer):
+    def __init__(self,d_model,**kwargs):
+        '''
+        node2vec after linear transform->(N,d)
+        Args:
+            d_model: a value
+            **kwargs:
+        '''
+        super(Spatial_embedding_layers,self).__init__(**kwargs)
+        self.d_model= d_model
+        self.dense = tf.keras.layers.Dense(self.d_model,use_bias=False)
+    def call(self,inp):
+        return self.dense(inp)
 
-    :param qkv:(BN,T,d,1)
-    :param weights:(BN,T,d,d)
-    :return:(BN,T,d)
-    """
-    out = tf.squeeze(tf.matmul(weights,qkv),[-1])
-    return out
 
+class STE_embdding_layers(tf.keras.layers.Layer):
+    def __init__(self,d_model,**kwargs):
+        super(STE_embdding_layers,self).__init__(**kwargs)
+        self.d_model = d_model
+        self.dense = tf.keras.layers.Dense(self.d_model,use_bias=False)
+    def call(self,te,se,if_te=True,if_se=True):
+        '''
 
-def positional_embedding(inputs,zero_pad=True,scaled=True):#inputs_shape(BN(T),T(N),D)
-    """
-    Positional embedding layers
-    :param inputs: inputs_shape(BN(T),T(N),D)
-    :param zero_pad: a boolen
-    :param scaled:a boolen
-    :return:(?,T,d)
-    """
-    B = tf.shape(inputs)[0]
-    batch_size, T_N ,num_units = inputs.get_shape().as_list()
-    with tf.variable_scope('positinal_embedding',reuse=tf.AUTO_REUSE):
-        position_ind = tf.tile(tf.expand_dims(tf.range(T_N), 0), [B,1])
-        PE = np.array([
-            [pos / np.power(10000, (i-i%2)/num_units) for i in range(num_units)]
-            for pos in range(T_N)])
-        PE[:, 0::2] = np.sin(PE[:, 0::2])
-        PE[:, 1::2] = np.cos(PE[:, 1::2])
-        lookup_table = tf.convert_to_tensor(PE,dtype=tf.float32)
-        if zero_pad:
-            lookup_table = tf.concat((tf.zeros(shape=[1, num_units]),
-                                      lookup_table[1:, :]), 0)
-        outputs = tf.nn.embedding_lookup(lookup_table, position_ind)
-        if scaled:
-            outputs = outputs * num_units ** 0.5
-        outputs = tf.cast(outputs,'float32')
-        return outputs
+        Args:
+            te: tensor (b,t,n,d)
+            se: tensor(n,d)
+            if_te: a boolen
+            if_se: a boolen
 
-def temproal_embedding_layers(x):
-    """
-    Time2Vec methods for time embedding
-    :param x: (B,T,N,C)->(batch_size,time_seq,num_nodes,c)
-    :return: (B,T,N,d)->(batch_size,time_seq,num_nodes,d)
-    """
-    with tf.variable_scope('Temporal_embedding', reuse=tf.AUTO_REUSE):
-        B,T,N,C = x.get_shape().as_list()
-        x_te = tf.reshape(tf.transpose(x, [0, 2, 1, 3]), [-1, T, C])
-        origin = tf.layers.dense(x_te, 1, use_bias=True)
-        sin_trans = tf.sin(tf.layers.dense(x_te, 64, use_bias=True))
-        te_out = tf.concat((sin_trans, origin), axis=-1)
-        te_out += positional_embedding(te_out)
-        x_tes = tf.layers.dense(te_out, hp.num_units, use_bias=False)
-        x_tes = tf.transpose(tf.reshape(x_tes, [-1, N, T, hp.num_units]), [0, 2, 1, 3])
-        return x_tes
+        Returns:ste (b,t,n,d)
 
-def spatio_embedding_layers(x):
-    """
-    Node2vec methods has benn adopted in the data deal processing for adjacency matrix
-    :param x: a node embedding (N,C)
-    :return: (N,d)
-    """
-    with tf.variable_scope('Spatio_embedding',reuse=tf.AUTO_REUSE):
-        x_statics = tf.layers.dense(x,hp.num_units,use_bias=False)
-    return x_statics
-
-def Spatiotemporal_embeeding_layers(x_tes,x_statics,if_te=hp.if_te,if_se=hp.if_se):
-    """
-
-    :param x_tes: (B,T,N,d)
-    :param x_statics: (N,d)
-    :param if_te: if Ture the temporal_embedding is used
-    :param if_se: if Ture the spatioal_embedding is used
-    :return: (B,T,N,d)
-    """
-    with tf.variable_scope('SpatialTempralEmbedding', reuse=tf.AUTO_REUSE):
-        B = tf.shape(x_tes)[0]
-        T = x_tes.get_shape().as_list()[1]
-        x_statics = tf.tile(tf.expand_dims(tf.expand_dims(x_statics, 0), 0), [B, T, 1, 1])
-        if if_se and not if_te:
-            return x_statics
+        '''
+        B,T,N,D = get_shape(te)
+        se_ = tf.tile(tf.expand_dims(tf.expand_dims(se,0),1),[B,T,1,1])
+        if if_te and if_se:
+          ste = se_+te
+          return self.dense(ste)
         elif if_te and not if_se:
-            return x_tes
-        else:
-            # ste_s = tf.concat((x_tes, x_statics), -1)
-            ste_s = x_tes+x_statics
-            ste_s = tf.layers.dense(ste_s, hp.num_units, use_bias=False)
-            return ste_s
-def meta_learner(ste_s,scope,num_weight_matrix):
-    """
+          return te
+        elif if_se and not if_te:
+          return se_
 
-    :param ste_s: (B,T,N,d)
-    :param num_weight_matrix: WQ,WV,WK guiad
-    :return: a  list [?,T,N,1,dk,d]
-    """
-    with tf.variable_scope(scope, reuse=tf.AUTO_REUSE):
-        B, T, N, d = ste_s.get_shape().as_list()
-        meta_ = tf.layers.dense(ste_s, hp.num_units//2, use_bias=True, activation=tf.nn.leaky_relu)
-        meta_ = tf.layers.dense(meta_, num_weight_matrix * hp.num_units * hp.num_units, use_bias=True)#placed most memory
-        meta_ = tf.reshape(meta_, [-1, T, N, num_weight_matrix, hp.num_units, hp.num_units])  # ->(?,T,N,num_weight_m,dk,d)
-        W_list = tf.split(meta_, num_weight_matrix, axis=3)
-    return W_list
+class QKV_projection(tf.keras.layers.Layer):
+    def __init__(self,d_model):
+        super().__init__()
+        self.d_model = d_model
+        self.wq = tf.keras.layers.Dense(d_model)
+        self.wk = tf.keras.layers.Dense(d_model)
+        self.wv = tf.keras.layers.Dense(d_model)
+    def call(self,quries,keys,values):
+        '''
+        original projection for multi head attention
+        Args:
+            quries: b,tq,n,d
+            keys: b,tk,n,d
+            values: b,tk,n,d
 
-def temproal_attention(queries,keys,ste_q,ste_k,key_mask,drop_rate,scope,
-                          if_training=True,if_keymask=True,if_casual=False,if_ste=True,if_meta=True):
-    """
+        Returns: three same shape tensors ->(b,t,n,d)
 
-    :param queries: (B,T_q,N,d)
-    :param keys: (B,T_k,N,d)
-    :param ste_q: (B,T_q,N,d)
-    :param ste_k: (B,T_k,N,d)
-    :param key_mask: (B,T_q,1)
-    :param drop_rate:a value
-    :param if_training:a boolen
-    :param if_keymask:a boolen
-    :param if_casual:a boolen
-    :param if_ste:a boolen
-    :param if_meta:a boolen
-    :return:(B,T_q,,N,d)
-    """
-    with tf.variable_scope(scope,reuse=tf.AUTO_REUSE):
-        B, T, N, d = queries.get_shape().as_list()
-        B_, T_, N_, d_ = keys.get_shape().as_list()
-        queries = tf.reshape(tf.transpose(queries,[0, 2, 1, 3]), [-1, T, d])#(BN,T,d)
-        keys = tf.reshape(tf.transpose(keys,[0, 2, 1, 3]), [-1, T_, d_])#(BN,T,d)
-        queries_ = tf.expand_dims(queries, -1)#(BN,T,d,1) for meta
-        keys_ = tf.expand_dims(keys,-1)#(BN,T,d,1) for meta
-        if not if_ste:
-            Q = tf.layers.dense(queries,hp.num_units,use_bias=True)
-            K = tf.layers.dense(keys,hp.num_units,use_bias=True)
-            V = tf.layers.dense(keys,hp.num_units,use_bias=True)
-            print('you are using nothing trick in your network!')
-        else:
-            if if_meta:
-                guide_metrixes_q = meta_learner(ste_q,scope='queries',num_weight_matrix=1)#Wq,wk,wv not the same when interactivate
-                guide_metrixes_kv = meta_learner(ste_k,scope='keys_values',num_weight_matrix=2)
-                weight_matrixs_q = list(
-                    map(lambda tensor: tf.reshape(tf.transpose(tensor, [0, 2, 1, 3, 4, 5]),
-                    [-1, T, hp.num_units, hp.num_units]),guide_metrixes_q))#->[(BN,T,d,d),(BN,T,d,d),(BN,T,d,d)]
-                weight_matrixs_kv  = list(
-                    map(lambda tensor: tf.reshape(tf.transpose(tensor, [0, 2, 1, 3, 4, 5]),
-                      [-1, T_, hp.num_units, hp.num_units]),guide_metrixes_kv))  # ->[(BN,T,d,d),(BN,T,d,d),(BN,T,d,d)]
-                weight_matrixs_q.extend(weight_matrixs_kv)
-                W_Q,W_K,W_V = weight_matrixs_q
-                Q = meta_guide_transform(queries_,W_Q)#->(BN,T,d)
-                K = meta_guide_transform(keys_,W_K)#->(BN,T,d)
-                V = meta_guide_transform(keys_,W_V)#->(BN,T,d)
-                print('you are using the meta in your network!')
-            else:
-                ste_q = tf.reshape(tf.transpose(ste_q,[0,2,1,3]),[-1,T,d])
-                ste_k = tf.reshape(tf.transpose(ste_k, [0,2,1,3]), [-1,T_,d])
-                Q = tf.layers.dense(queries+ste_q, hp.num_units, use_bias=True)
-                K = tf.layers.dense(keys+ste_k, hp.num_units, use_bias=True)
-                V = tf.layers.dense(keys+ste_k, hp.num_units, use_bias=True)
-                print('you are using the STEs only "+" in your network!')
-        #splite&concat
-        Q_= tf.concat(tf.split(Q, hp.num_heads, axis=2), axis=0) # (BN*h,T_q,d/h)
-        K_= tf.concat(tf.split(K, hp.num_heads, axis=2), axis=0) # (BN*h,T_k,d/h)
-        V_ = tf.concat(tf.split(V, hp.num_heads, axis=2), axis=0) # (BN*h,T_k,d/h)
-        #SDPA
-        with tf.variable_scope('scaled_dot_product_attention',reuse=tf.AUTO_REUSE):
-            d_k =  Q_.get_shape().as_list()[-1]
-            outputs = tf.matmul(Q_, tf.transpose(K_, [0, 2, 1]))  # (BNh, T_q, T_k)
-            outputs /= d_k ** 0.5
-            #masking method
-            padding_num = -2 ** 32 + 1  # an inf
-            if if_keymask:  # padding masking
-                key_masks = tf.to_float(key_mask)  # (BN, T_k,1)
-                key_masks = tf.transpose(key_masks, [0, 2, 1])  # (BN, 1,T_k)
-                key_masks = tf.tile(key_masks, [hp.num_heads, T, 1])  # (BNh, T_q, T_k)
-                paddings = tf.ones_like(outputs) * padding_num
-                outputs = tf.where(tf.equal(key_masks, 0), paddings, outputs)  # (BNh, T_q, T_k)
-            elif if_casual:
-                diag_vals = tf.ones_like(outputs[0, :, :])  # generate a matrix->(T_q, T_k),filled 1
-                tril = tf.linalg.band_part(diag_vals, -1, 0)#Upper triangular matrix
-                future_masks = tf.tile(tf.expand_dims(tril, 0), [tf.shape(outputs)[0], 1, 1])
-                paddings = tf.ones_like(future_masks) * padding_num
-                outputs = tf.where(tf.equal(future_masks, 0), paddings, outputs)
-            #softmax
-            outputs = tf.nn.softmax(outputs)
-            attention = tf.transpose(outputs, [0, 2, 1])
-            tf.summary.image("attention", tf.expand_dims(attention[:1], -1))  # save the first feature image
-            #dropout
-            outputs = tf.layers.dropout(outputs, rate=drop_rate, training=if_training)
-            # weight_sum
-            outputs = tf.matmul(outputs, V_)# (BN*h,T_q,d/h)
-            outputs = tf.concat(tf.split(outputs, hp.num_heads, axis=0), axis=2)#(BN,T_q,d)
-            # Residual connection
-            outputs += queries  # ->#(BN,T_q,d)
-            # Normalize
-            outputs = ln(outputs)
-            return tf.transpose(tf.reshape(outputs,[-1,N,T,d]),[0,2,1,3])
+        '''
+        return self.wq(quries),self.wk(keys),self.wv(values)
 
-def spatio_attention(quries,keys,ste,transition_matrix,drop_rate,if_training=True,if_ste=True,if_meta=True,if_tmm=True):
-    """
+class Meta_projection(tf.keras.layers.Layer):
+    def __init__(self,d_model):
+        super().__init__()
+        self.d1 = d_model/2
+        assert d_model%2==0,'Dimension should be even!'
+        self.d2 = d_model
+        self.meta1 = [tf.keras.layers.Dense(d_model,activation=tf.keras.activations.relu,use_bias=True) for _ in range(3)]
+        self.meta2 = [tf.keras.layers.Dense(tf.math.square(d_model),activation=tf.keras.activations.linear,use_bias=True) for _ in range(3)]
+    def reshape(self,out):
+        b,t,n,d = get_shape(out)
+        return tf.reshape(out,[-1,t,n,self.d2,self.d2])
+    def call(self,stq_q,stq_k,stq_v):
+        '''
+        Generating the weight matrix by meta-learning with shaoe (b,t,n,d,d)
+        Args:
+            stq_q: b,t,n,d
+            stq_k: b,t,n,d
+            stq_v: b,t,n,d
 
-    :param quries: (B,T_q,N,d)
-    :param keys: (B,T_q,N,d),the same
-    :param ste: (B,T_q,N,d), the same
-    :param transition_matrix: (num_matrix,N,N)
-    :param drop_rate: a value
-    :param if_training: a boolen
-    :param if_ste: a boolen
-    :param if_meta: a boolen
-    :param if_tmm: a boolen
-    :return: (B,T_q,N,d)
-    """
-    with tf.variable_scope('SpatioAtt', reuse=tf.AUTO_REUSE):
-        B, T, N, D = quries.get_shape().as_list()
-        B = tf.shape(quries)[0]
-        quries = tf.reshape(quries,[-1,N,D])#(BT,N,D)
-        keys= tf.reshape(keys, [-1, N, D])  # (BT,N,D)
-        queries_ = tf.expand_dims(quries, -1)#(BT,N,d,1) for meta
-        keys_ = tf.expand_dims(keys, -1)  # (BT,N,d,1) for meta
-        number_tranm = transition_matrix.get_shape().as_list()[0]
-        out = []
-        for num in range(number_tranm):
-            with tf.variable_scope('Transition_matrix{}'.format(num), reuse=tf.AUTO_REUSE):
-                if if_ste:
-                    if if_meta:
-                        guide_matrix = meta_learner(ste,scope='qkv',num_weight_matrix=3)#[?,T,N,1,dk,d]
-                        weight_matrixs = list(map(lambda tensor: tf.reshape(tensor,[-1, N, hp.num_units, hp.num_units]),
-                                guide_matrix))  # ->[(BT,N,d,d),(BT,N,d,d),(BT,N,d,d)]
-                        W_Q, W_K, W_V = weight_matrixs
-                        Q = meta_guide_transform(queries_, W_Q)  # ->(BT,N,d)
-                        K = meta_guide_transform(keys_, W_K)  # ->(BT,N,d)
-                        V = meta_guide_transform(keys_, W_V)  # ->(BT,N,d)
-                    else:
-                        ste = tf.reshape(ste,[-1,N,D])
-                        Q = tf.layers.dense(quries + ste, hp.num_units, use_bias=True)#->(BT,N,d)
-                        K = tf.layers.dense(keys + ste, hp.num_units, use_bias=True)
-                        V = tf.layers.dense(keys + ste, hp.num_units, use_bias=True)
-                else:
-                    Q = tf.layers.dense(quries, hp.num_units, use_bias=True)
-                    K = tf.layers.dense(keys, hp.num_units, use_bias=True)
-                    V = tf.layers.dense(keys, hp.num_units, use_bias=True)
-                # splite&concat
-                Q_ = tf.concat(tf.split(Q, hp.num_heads, axis=2), axis=0)  # (BT*h,N,d/h)
-                K_ = tf.concat(tf.split(K, hp.num_heads, axis=2), axis=0)  # (BT*h,N,d/h)
-                V_ = tf.concat(tf.split(V, hp.num_heads, axis=2), axis=0)  # (BT*h,N,d/h)
-                with tf.variable_scope('scaled_dot_product_attention', reuse=tf.AUTO_REUSE):
-                    d_k = Q_.get_shape().as_list()[-1]
-                    outputs = tf.matmul(Q_, tf.transpose(K_, [0, 2, 1]))  # (BTh, N, N)
-                    outputs /= d_k ** 0.5
-                    padding_num = -2 ** 32 + 1  # an inf
-                    #transition matrixes mask
-                    if if_tmm:
-                        tm_mask =tf.zeros_like(transition_matrix[num])#(N,N)
-                        paddings = tf.ones_like(transition_matrix[num]) * padding_num
-                        tm_mask = tf.where(tf.equal(transition_matrix[num],0),paddings,tm_mask)
-                        tm_mask = tf.expand_dims(tm_mask,0)#(1,N,N)
-                        # with tf.device('/cpu:0'):
-                        #     tm_mask = tf.tile(tf.expand_dims(tm_mask,0),[B*T*hp.num_units,1,1])#placed most memory
-                    #softmax
-                    tmm = tf.expand_dims(transition_matrix[num],0)#brodcast
-                    outputs = tf.add(outputs,tm_mask)#brodcast
-                    outputs = tf.nn.softmax(outputs)*tmm
-                    #store attention
-                    attention = tf.transpose(outputs, [0, 2, 1])
-                    tf.summary.image("attention", tf.expand_dims(attention[:1], -1))  # save the first feature image
-                    # dropout
-                    outputs = tf.layers.dropout(outputs, rate=drop_rate, training=if_training)
-                    outputs = tf.matmul(outputs, V_)  # (BT*h,N,d/h)
-                    outputs = tf.concat(tf.split(outputs, hp.num_heads, axis=0), axis=2)  # (BT,N,d)
-            out.append(outputs)
-        out = tf.reshape(tf.transpose(tf.convert_to_tensor(out),[1,2,3,0]),[-1,N,D*number_tranm])#(BT,N,D*NUM)
-        out = tf.layers.dense(out,hp.num_units)#(BT,N,D)
-        out = tf.layers.dropout(out, rate=drop_rate, training=if_training)
-        out += quries
-        out = ln(out)#(BT,N,D)
-        return tf.reshape(out,[-1,T,N,D])
+        Returns:w->(b,t,n,d,d)
+
+        '''
+        inp = [stq_q,stq_k,stq_v]
+        w_list = []
+        for i in range(3):
+            out1_ = self.meta1[i](inp[i])
+            out2_ = self.meta2[i](out1_)
+            out_ = self.reshape(out2_)
+            w_list.append(out_)
+        return w_list
+
+class Multi_head_temporal_attention(tf.keras.layers.Layer):
+    def __init__(self,d_model,num_heads):
+        super().__init__()
+        self.d_model  = d_model
+        self.num_heads = num_heads
+        assert d_model%num_heads==0,"The d_model is incorrect,Adjusted to an integer multiple of heads"
+        self.qkv_proj = QKV_projection(d_model)
+        self.meta_pro = Meta_projection(d_model)
+        self.dense = tf.keras.layers.Dense(self.d_model,use_bias=False)
+    def split_head(self,x):
+        return tf.concat(tf.split(x,self.num_heads,axis=-1),axis=0)#-->(-1*h,t,n,d/h)
+    def temporal_reshape(self,x):
+        b,t,_,d = get_shape(x)
+        x_  = tf.reshape(tf.transpose(x,[0,2,1,3]),[-1,t,d])
+        return x_
+    def concat_head(self,x):
+        return tf.concat(tf.split(x,self.num_heads,axis=0),axis=-1)
+    def call(self,queries,keys,values,tms,ste_q,ste_k,ste_v,if_ste,if_meta,if_future,if_spatial=False):
+        '''
+        Attention mechanisms in the temporal dimension
+        Args:
+            queries:b,t,n,d
+            keys::b,t,n,d
+            values::b,t,n,d
+            ste_q:b,t,n,d
+            ste_k:b,t,n,d
+            ste_v:b,t,n,d
+            if_ste:boolen
+            if_meta:boolen
+            if_future:boolen
+            if_spatial:boolen
+
+        Returns: (b,t,n,d),(bnh,tq,tk)
+
+        '''
+        if if_ste and not if_meta:
+            q,k,v = self.qkv_proj(tf.add(queries+ste_q),tf.add(keys+ste_k),tf.add(values+ste_v))
+        elif if_ste and if_meta:
+            w_list = self.meta_pro(ste_q,ste_k,ste_v)
+            wq,wk,wv = w_list
+            q = meta_guide(queries,wq)
+            k = meta_guide(keys,wk)
+            v = meta_guide(values,wv)
+        elif not if_ste:
+            q,k,v = self.qkv_proj(queries,keys,values)#->(b,tk,n,d)
+        b, t, n, d = get_shape(q)
+        q,k,v = list(map(self.temporal_reshape,[q,k,v]))#->(bn,t,d)
+        q_,k_,v_ = list(map(self.split_head,[q,k,v]))#->(bnh,t,d/h)
+        out_ ,att = scale_dot_product_attention(q_,k_,v_,tm=tms,if_future=if_future,if_spatial=if_spatial)#-->(bnh,tq,d),(bnh,t,t)
+        out_ = self.concat_head(out_)#->(bn,t,d)
+        out_ = tf.transpose(tf.reshape(out_,(-1,n,t,d)),[0,2,1,3])
+        out_ = self.dense(out_)
+        return out_,att
+
+class Multi_head_spatial_attention(tf.keras.layers.Layer):
+    def __init__(self,d_model,num_heads):
+        super().__init__()
+        self.d_model  = d_model
+        self.num_heads = num_heads
+        assert d_model%num_heads==0,"The d_model is incorrect,Adjusted to an integer multiple of heads"
+        self.qkv_proj = QKV_projection(d_model)
+        self.meta_pro = Meta_projection(d_model)
+        self.dense = tf.keras.layers.Dense(self.d_model,use_bias=False)
+    def split_head(self,x):
+        return tf.concat(tf.split(x,self.num_heads,axis=-1),axis=0)#-->(-1*h,t,n,d/h)
+    def spatial_reshape(self,x):
+        b,_,n,d = get_shape(x)
+        return tf.reshape(x,(-1,n,d))
+    def concat_head(self,x):
+        return tf.concat(tf.split(x,self.num_heads,axis=0),axis=-1)
+    def call(self,queries,keys,values,tms,ste_q,ste_k,ste_v,if_ste,if_meta,if_future=False,if_spatial=True):
+        '''
+        Attention mechanisms in the spatial dimension
+        Args:
+            queries: b,t,n,d
+            keys: b,t,n,d
+            values: b,t,n,d
+            tms: m,n,n
+            ste_q: b,t,n,d
+            ste_k: b,t,n,d
+            ste_v: b,t,n,d
+            if_ste: boolen
+            if_meta: boolen
+            if_future: boolen
+            if_spatial: boolen
+
+        Returns:(b,t,n,d),(bth,n,n)
+
+        '''
+        outs = []
+        atts = []
+        tms = tf.cast(tms,tf.float32)
+        b, t, n, d = get_shape(queries)
+        for num in range(tms.shape[0]):#tms->(m,n,n)
+            if if_ste and not if_meta:
+                q,k,v = self.qkv_proj(tf.add(queries+ste_q),tf.add(keys+ste_k),tf.add(values+ste_v))
+            elif if_ste and if_meta:
+                w_list = self.meta_pro(ste_q,ste_k,ste_v)
+                wq,wk,wv = w_list
+                q = meta_guide(queries,wq)
+                k = meta_guide(keys,wk)
+                v = meta_guide(values,wv)
+            elif not if_ste:
+                q,k,v = self.qkv_proj(queries,keys,values)#->(b,tk,n,d)
+            q, k, v = list(map(self.spatial_reshape, [q, k, v]))  # ->(bt,n,d)
+            q_, k_, v_ = list(map(self.split_head, [q, k, v]))  # ->(bth,n,d/h)
+            out_, att = scale_dot_product_attention(q_, k_, v_, tm=tms[num], if_future=if_future, if_spatial=if_spatial)
+            atts.append(att)
+            out_ = self.concat_head(out_)#->(bt,n,d)
+            outs.append(out_)
+        out = tf.transpose(tf.convert_to_tensor(outs),[1,2,3,0])#->(m,bt,n,d)->(bt,n,d,m)
+        out = tf.reshape(out,(-1,t,n,d*tms.shape[0]))#(b,t,n,dm)
+        atts = tf.convert_to_tensor(atts)#->(m,bht,n,n)
+        out = self.dense(out)#->(b,t,n,d)
+        return out,atts
+
+class FFN(tf.keras.layers.Layer):
+    def __init__(self,d_model):
+        super().__init__()
+        self.d1 = d_model/4
+        assert d_model%4==0,"The d should be divisible by 4"
+        self.d2 = d_model
+        self.dense1 = tf.keras.layers.Dense(self.d1,activation=tf.keras.activations.relu,use_bias=False)
+        self.dense2 = tf.keras.layers.Dense(self.d2,activation=tf.keras.activations.linear,use_bias=False)
+    def call(self,inp):
+        '''
+        dimension transformation
+        Args:
+            inp:(b,t,n,d)
+
+        Returns:(b,t,n,d)
+
+        '''
+        out_ = self.dense1(inp)
+        out_ = self.dense2(out_)
+        return out_
+
+class Encoderlayer(tf.keras.layers.Layer):
+    def __init__(self,d_model,num_heads,rate=hp.drop_rate,b_layers=hp.num_begin_blocks,m_layers=hp.num_medium_blocks,t_layers=hp.num_end_blocks):
+        super().__init__()
+        self.b_layers = b_layers
+        self.m_layers = m_layers
+        self.t_layers = t_layers
+        #Bottom layer
+        self.mtas1 = [Multi_head_temporal_attention(d_model,num_heads) for _ in range(b_layers)]
+        self.dropouts1_0 = [tf.keras.layers.Dropout(rate) for _ in range(b_layers) ]
+        self.layernorms1_0 = [tf.keras.layers.LayerNormalization(epsilon=1e-6) for _ in range(b_layers)]
+        self.msas1 = [Multi_head_spatial_attention(d_model,num_heads) for _ in range(b_layers)]
+        self.dropouts1_1 = [tf.keras.layers.Dropout(rate) for _ in range(b_layers)]
+        self.layernorms1_1 = [tf.keras.layers.LayerNormalization(epsilon=1e-6) for _ in range(b_layers)]
+        # Middle layer
+        self.mtas2 = [Multi_head_temporal_attention(d_model, num_heads) for _ in range(m_layers)]
+        self.dropouts2_0 = [tf.keras.layers.Dropout(rate) for _ in range(m_layers)]
+        self.layernorms2_0 = [tf.keras.layers.LayerNormalization(epsilon=1e-6) for _ in range(m_layers)]
+        self.msas2 = [Multi_head_spatial_attention(d_model, num_heads) for _ in range(m_layers)]
+        self.dropouts2_1 = [tf.keras.layers.Dropout(rate) for _ in range(m_layers)]
+        self.layernorms2_1 = [tf.keras.layers.LayerNormalization(epsilon=1e-6) for _ in range(m_layers)]
+        self.ffns1 = [FFN(d_model) for _ in range(m_layers)]
+        self.dropouts2_2 = [tf.keras.layers.Dropout(rate) for _ in range(m_layers)]
+        self.layernorms2_2 = [tf.keras.layers.LayerNormalization(epsilon=1e-6) for _ in range(m_layers)]
+        # Top layer
+        self.ffns2 = [FFN(d_model) for _ in range(t_layers)]
+        self.dropouts3_0 = [tf.keras.layers.Dropout(rate) for _ in range(t_layers)]
+        self.layernorms3_0 = [tf.keras.layers.LayerNormalization(epsilon=1e-6) for _ in range(t_layers)]
+    def call(self,queries,keys,values,tms,ste_q,ste_k,ste_v,if_ste,if_meta,training=True):
+        # Bottom layer
+        #(bnh,t,t)
+        for i in range(self.b_layers):
+            out_, att_t_botte_e = self.mtas1[i](queries,keys,values,None,ste_q,ste_k,ste_v,if_ste,if_meta,if_future=False,if_spatial=False)
+            out_ = self.dropouts1_0[i](out_,training=training)
+            out_ = self.layernorms1_0[i](queries+out_)
+            #(m,bht,n,n)
+            queries=keys=values=out_
+            out_, att_s_botte_e = self.msas1[i](queries,keys,values,tms, ste_q, ste_k, ste_v, if_ste, if_meta, if_future=False,if_spatial=True)
+            out_ = self.dropouts1_1[i](out_, training=training)
+            out_ = self.layernorms1_1[i](queries + out_)
+            queries = keys = values = out_
+        # Middle layer
+        for i in range(self.m_layers):
+            out_, att_t_middle_e = self.mtas2[i](queries, keys, values,None, ste_q, ste_k, ste_v, if_ste, if_meta, if_future=False,if_spatial=False)
+            out_ = self.dropouts2_0[i](out_, training=training)
+            out_ = self.layernorms2_0[i](queries + out_)
+            queries = keys = values = out_
+            out_, att_s_middle_e = self.msas2[i](queries, keys, values, tms, ste_q, ste_k, ste_v, if_ste, if_meta, if_future=False,if_spatial=True)
+            out_ = self.dropouts2_1[i](out_, training=training)
+            out1 = self.layernorms2_1[i](queries + out_)
+            out_ = self.ffns1[i](out1)
+            out_ = self.dropouts2_2[i](out_, training=training)
+            out2 = self.layernorms2_2[i](out_+out1)
+            queries = keys = values = out_
+        for i in range(self.t_layers):
+            # Top layer
+            out_ = self.ffns2[i](out2)
+            out_ = self.dropouts3_0[i](out_, training=training)
+            out_ = self.layernorms3_0[i](out_ + out2)
+            out2 = out_
+        return out_,att_t_botte_e,att_s_botte_e,att_t_middle_e,att_s_middle_e#only the last layer are reversed
+
+class Encoder(tf.keras.layers.Layer):
+    def __init__(self,d_model,num_heads,rate=hp.drop_rate,b_layers=hp.num_begin_blocks,m_layers=hp.num_medium_blocks,t_layers=hp.num_end_blocks):
+        super().__init__()
+        self.d_model = d_model
+        self.num_heads = num_heads
+
+        #embeeding layers
+        self.project = Projection(d_model)
+        self.te = Temporal_embedding_layer(d_model,hp.input_len)
+        self.se = Spatial_embedding_layers(d_model)
+        self.ste_embedding = STE_embdding_layers(d_model)
+        #enc_layers
+        self.encoder_layer = Encoderlayer(d_model,num_heads,rate=rate,b_layers=b_layers,m_layers=m_layers,t_layers=t_layers)
+
+    def call(self,x,n2v,tms,if_te=True,if_se=True,if_ste=True,if_meta=True,training=True):
+        enc_inp = self.project(x)
+        te_inp = self.te(x)
+        se_inp = self.se(n2v)
+        stes = self.ste_embedding(te_inp,se_inp,if_te,if_se)
+        ste_q = ste_k = ste_v=stes
+        queries=keys=values = enc_inp
+        enc_out,att_t_botte_e,att_s_botte_e,att_t_middle_e,att_s_middle_e = self.encoder_layer(queries,keys,values,tms,ste_q,ste_k,ste_v,if_ste,if_meta,training=training)
+        return enc_out,att_t_botte_e,att_s_botte_e,att_t_middle_e,att_s_middle_e,stes
 
 
-def feed_forward(inputs):
-    """
+class Decoderlayer(tf.keras.layers.Layer):
+    def __init__(self,d_model,num_heads,rate=hp.drop_rate,b_layers=hp.num_begin_blocks,m_layers=hp.num_medium_blocks,t_layers=hp.num_end_blocks):
+        super().__init__()
+        self.b_layers = b_layers
+        self.m_layers = m_layers
+        self.t_layers = t_layers
+        #Bottom layer
+        self.mtas1 = [Multi_head_temporal_attention(d_model,num_heads) for _ in range(b_layers)]
+        self.dropouts1_0 = [tf.keras.layers.Dropout(rate) for _ in range(b_layers) ]
+        self.layernorms1_0 = [tf.keras.layers.LayerNormalization(epsilon=1e-6) for _ in range(b_layers)]
+        self.msas1 = [Multi_head_spatial_attention(d_model,num_heads) for _ in range(b_layers)]
+        self.dropouts1_1 = [tf.keras.layers.Dropout(rate) for _ in range(b_layers)]
+        self.layernorms1_1 = [tf.keras.layers.LayerNormalization(epsilon=1e-6) for _ in range(b_layers)]
+        self.mtias1 = [Multi_head_temporal_attention(d_model,num_heads) for _ in range(b_layers)]
+        self.dropouts1_2 = [tf.keras.layers.Dropout(rate) for _ in range(b_layers)]
+        self.layernorms1_2 = [tf.keras.layers.LayerNormalization(epsilon=1e-6) for _ in range(b_layers)]
+        # Middle layer
+        self.mtas2 = [Multi_head_temporal_attention(d_model, num_heads) for _ in range(m_layers)]
+        self.dropouts2_0 = [tf.keras.layers.Dropout(rate) for _ in range(m_layers)]
+        self.layernorms2_0 = [tf.keras.layers.LayerNormalization(epsilon=1e-6) for _ in range(m_layers)]
+        self.msas2 = [Multi_head_spatial_attention(d_model, num_heads) for _ in range(m_layers)]
+        self.dropouts2_1 = [tf.keras.layers.Dropout(rate) for _ in range(m_layers)]
+        self.layernorms2_1 = [tf.keras.layers.LayerNormalization(epsilon=1e-6) for _ in range(m_layers)]
+        self.mtias2 = [Multi_head_temporal_attention(d_model, num_heads) for _ in range(m_layers)]
+        self.dropouts2_2 = [tf.keras.layers.Dropout(rate) for _ in range(m_layers)]
+        self.layernorms2_2 = [tf.keras.layers.LayerNormalization(epsilon=1e-6) for _ in range(m_layers)]
+        self.ffns1 = [FFN(d_model) for _ in range(m_layers)]
+        self.dropouts2_3 = [tf.keras.layers.Dropout(rate) for _ in range(m_layers)]
+        self.layernorms2_3 = [tf.keras.layers.LayerNormalization(epsilon=1e-6) for _ in range(m_layers)]
+        # Top layer
+        self.ffns2 = [FFN(d_model) for _ in range(t_layers)]
+        self.dropouts3_0 = [tf.keras.layers.Dropout(rate) for _ in range(t_layers)]
+        self.layernorms3_0 = [tf.keras.layers.LayerNormalization(epsilon=1e-6) for _ in range(t_layers)]
+    def call(self,queries,keys,values,enc_memory,tms,ste_enc,ste_q,ste_k,ste_v,if_ste,if_meta,training=True):
+        # Bottom layer
+        #(bnh,t,t)
+        for i in range(self.b_layers):
+            out_, att_t_botte_d = self.mtas1[i](queries,keys,values,None,ste_q,ste_k,ste_v,if_ste,if_meta,if_future=True,if_spatial=False)
+            out_ = self.dropouts1_0[i](out_,training=training)
+            out_ = self.layernorms1_0[i](queries+out_)
+            #(m,bht,n,n)
+            queries=out_
+            out_, att_s_botte_d = self.msas1[i](out_,out_,out_,tms, ste_q, ste_k, ste_v, if_ste, if_meta, if_future=False,if_spatial=True)
+            out_ = self.dropouts1_1[i](out_, training=training)
+            out_ = self.layernorms1_1[i](queries + out_)
+            queries = out_
+            out_, att_ti_botte_d = self.mtias1[i](out_, enc_memory, enc_memory, None, ste_q, ste_enc, ste_enc, if_ste, if_meta,
+                                                if_future=False, if_spatial=False)
+            out_ = self.dropouts1_2[i](out_, training=training)
+            out_ = self.layernorms1_2[i](queries + out_)
+            queries = keys = values = out_
+        # Middle layer
+        for i in range(self.m_layers):
+            out_, att_t_middle_d = self.mtas2[i](queries, keys, values,None, ste_q, ste_k, ste_v, if_ste, if_meta, if_future=True,if_spatial=False)
+            out_ = self.dropouts2_0[i](out_, training=training)
+            out_ = self.layernorms2_0[i](queries + out_)
+            queries = out_
+            out_, att_s_middle_d = self.msas2[i](out_, out_,out_, tms, ste_q, ste_k, ste_v, if_ste, if_meta, if_future=False,if_spatial=True)
+            out_ = self.dropouts2_1[i](out_, training=training)
+            out_ = self.layernorms2_1[i](queries + out_)
+            queries = out_
+            out_, att_ti_middle_d = self.mtias2[i](out_, enc_memory, enc_memory, None, ste_q, ste_enc, ste_enc, if_ste,
+                                                  if_meta,if_future=False, if_spatial=False)
+            out_ = self.dropouts2_2[i](out_, training=training)
+            out1 = self.layernorms2_2[i](queries + out_)
+            out_ = self.ffns1[i](out1)
+            out_ = self.dropouts2_3[i](out_, training=training)
+            out2 = self.layernorms2_3[i](out_+out1)
+            queries = keys = values = out_
+        for i in range(self.t_layers):
+            # Top layer
+            out_ = self.ffns2[i](out2)
+            out_ = self.dropouts3_0[i](out_, training=training)
+            out_ = self.layernorms3_0[i](out_ + out2)
+            out2 = out_
+        return out_,att_t_botte_d,att_s_botte_d,att_ti_botte_d,att_t_middle_d,att_s_middle_d,att_ti_middle_d#only the last layer are reversed
 
-    :param inputs: (B,T,N,d)
-    :return: (B,T,N,,d)
-    """
-    with tf.variable_scope('FFN_layers',reuse=tf.AUTO_REUSE):
-        outputs = tf.layers.dense(inputs,hp.num_units//4,activation=tf.nn.leaky_relu)
-        outputs = tf.layers.dense(outputs,hp.num_units)
-        outputs+=inputs
-        outputs = ln(outputs)
-    return outputs
+class Decoder(tf.keras.layers.Layer):
+    def __init__(self,d_model,num_heads,rate=hp.drop_rate,b_layers=hp.num_begin_blocks,m_layers=hp.num_medium_blocks,t_layers=hp.num_end_blocks):
+        super().__init__()
+        self.d_model = d_model
+        self.num_heads = num_heads
 
+        #embeeding layers
+        self.project = Projection(d_model)
+        self.te = Temporal_embedding_layer(d_model,hp.output_len)
+        self.se = Spatial_embedding_layers(d_model)
+        self.ste_embedding = STE_embdding_layers(d_model)
+        #dec_layers
+        self.decoder_layer = Decoderlayer(d_model,num_heads,rate=rate,b_layers=b_layers,m_layers=m_layers,t_layers=t_layers)
 
-def ln(inputs, epsilon=1e-8):
-    '''Applies layer normalization. See https://arxiv.org/abs/1607.06450.
-    inputs: A tensor with 2 or more dimensions, where the first dimension has `batch_size`.
-    epsilon: A floating number. A very small number for preventing ZeroDivision Error.
-    scope: Optional scope for `variable_scope`.
-
-    Returns:
-      A tensor with the same shape and data dtype as `inputs`.
-    '''
-    with tf.variable_scope('ln', reuse=tf.AUTO_REUSE):
-        inputs_shape = inputs.get_shape()
-        params_shape = inputs_shape[-1:]
-
-        mean, variance = tf.nn.moments(inputs, [-1], keep_dims=True)
-        beta = tf.get_variable("beta", params_shape, initializer=tf.zeros_initializer(), )
-        gamma = tf.get_variable("gamma", params_shape, initializer=tf.ones_initializer())
-        normalized = (inputs - mean) / ((variance + epsilon) ** (.5))
-        outputs = gamma * normalized + beta
-
-    return outputs
+    def call(self,x,n2v,tms,enc_memory,ste_enc,if_te=True,
+             if_se=True,if_ste=True,if_meta=True,training=True):
+        dec_inp = self.project(x)
+        te_inp = self.te(x)
+        se_inp = self.se(n2v)
+        stes = self.ste_embedding(te_inp,se_inp,if_te,if_se)
+        ste_q = ste_k = ste_v=stes
+        queries=keys=values = dec_inp
+        dec_out,att_t_botte_d,att_s_botte_d,att_ti_botte_d,att_t_middle_d,att_s_middle_d,att_ti_middle_d = self.decoder_layer(queries,keys,values,enc_memory,tms,
+                                                                                               ste_enc,ste_q,ste_k,ste_v,if_ste,if_meta,training=training)
+        return dec_out,att_t_botte_d,att_s_botte_d,att_ti_botte_d,att_t_middle_d,att_s_middle_d,att_ti_middle_d
 
