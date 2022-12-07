@@ -53,7 +53,7 @@ python test.py
 ```
 We provide three metrics: `MAE`, `RMSE`, and `MAPE`
 
-In the end, the terminate will show the results of `3,6,9,12` steps errors and average errors of each steps. Three tables will saved into your project `gap.csv	', 'pred.csv', and  `ana.xlsx`
+In the end, the terminate will show the results of `3,6,9,12` steps errors and average errors of each steps. Three tables will saved into your project `gap.csv	`, `pred.csv`, and  `ana.xlsx`
 
 
 ## Results
