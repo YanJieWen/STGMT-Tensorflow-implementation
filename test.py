@@ -4,89 +4,81 @@
 # @IDE : Pycharm
 # @FileName : test
 # @Project Name :metacode
-import tensorflow.compat.v1 as tf
-tf.disable_v2_behavior()
+
+import tensorflow as tf
 import numpy as np
 from Hyperparameters import Hyperparameters as hp
 from utils_ import *
 import pickle
 import random
 import pandas as pd
-#get_data
-datas = read_pkl(hp.pkl_08)
-test_data = datas[2]#test data,(B,T_h+T_f,N,F)
-tms = np.array(datas[3])#(2,N,N)
-node2vec = datas[4]#(N,64)
-scalar = datas[5]
-zones = test_data.shape[2]
-#restore model
-test_sess = tf.Session()
-saver = tf.train.import_meta_graph('./ckpt/weight-61.meta')
-graph = tf.get_default_graph()
-saver.restore(test_sess, tf.train.latest_checkpoint('ckpt'))
-#define source data
-len_test = len(test_data)
-idx = np.arange(len_test)
-decoder_output_ = []
-output_datas_ = []
-for i in range(50):
-    np.random.shuffle(idx)
-    id = random.choice(idx)
-    end_idx = id+hp.batch_size
-    if end_idx>=len_test:
-        end_id = len_test
-    slc = idx[id:end_idx]
-    input_datas = test_data[slc,:hp.input_len,:,:]#only one points avoid memory out
-    output_datas = test_data[slc,hp.input_len:,:,:]
-    decoder_output = np.ones_like(output_datas) 
-    #define placehodler
-    x_input = graph.get_tensor_by_name('Placeholder:0')
-    decoder_input = graph.get_tensor_by_name('Placeholder_1:0')
-    nodev  = graph.get_tensor_by_name('Placeholder_2:0')
-    tms_ = graph.get_tensor_by_name('Placeholder_3:0')
-    # y_hat = graph.get_tensor_by_name('Prediction/y_hat/Einsum:0')
-    y_hat = graph.get_tensor_by_name('Prediction/dense/Tensordot:0') 
-    #autoregression
-    for j in range(hp.output_len):
-        _pred = test_sess.run(y_hat, feed_dict={x_input:input_datas,
-        decoder_input:decoder_output,nodev:node2vec,tms_:tms})
-        decoder_output[:,j,:,:] = _pred[:, j,:,:]#(B,T_f,N,1)
-    if decoder_output.shape[0]==hp.batch_size:
-        decoder_output_.append(decoder_output)#可能有不等于16个batch的情况，因此无法转为数组
-        output_datas_.append(output_datas)
-    else:
-        continue
-decoder_output = np.reshape(np.array(decoder_output_),[-1,hp.output_len,zones ,1])
-output_datas = np.reshape(np.array(output_datas_),[-1,hp.output_len,zones ,1])
 
-#get error
-pred = np.squeeze(scalar.inverse_transform(decoder_output.transpose([0,2,1,3]).reshape([-1,hp.out_units])).reshape([-1,hp.output_len,hp.out_units]))
-print(pred)
-to_pred = np.reshape(pred,(-1,zones ,hp.output_len))
-df_pred=  pd.DataFrame(to_pred[5,:,:])
-df_pred.to_csv('./pred.csv')
-#(BN,T)
-gt = np.squeeze(scalar.inverse_transform(output_datas.transpose([0,2,1,3]).reshape([-1,hp.out_units])).reshape([-1,hp.output_len,hp.out_units]))
-print(gt)
-to_gt = np.reshape(gt,(-1,zones,hp.output_len))
-df_gt=  pd.DataFrame(to_gt[5,:,:])
-df_gt.to_csv('./gt.csv')
-#(BN,T)
-#get eval
-MAE = np.mean(np.abs(pred-gt),axis=0)#（1，12）
-multi_MAE = MAE[hp.step_index]#(1,4)
-#RMSE
-RMSE = np.sqrt(np.mean(np.square(pred-gt),axis=0))
-multi_RMSE = RMSE[hp.step_index]
-#MAPE
-MAPE = np.mean(np.abs(pred-gt)/((np.abs(pred)+np.abs(gt))),axis=0)
-multi_MAPE = MAPE [hp.step_index]
-#to store multi step
-multi_error = toarray([MAE,RMSE,MAPE])
-df_e = pd.DataFrame(multi_error)
-df_e.to_csv('./multi_error_our.csv')
-print('The MAE,RMSE,MAPE in the 3,6,9,12 steps are {},{},{}'.format(multi_MAE,multi_RMSE,multi_MAPE))
-print(np.mean(MAE),np.mean(RMSE),np.mean(MAPE))
-# tensor_name_list = [tensor.name for tensor in graph.as_graph_def().node]
-# for tensor_name in tensor_name_list[:5000]:
-#     print(tensor_name)
+from frameworks import *
+
+#step1：get test data
+data = read_pkl(hp.pkl_08)
+test = data[2]
+tms = toarray(data[3])
+node2vec = data[4]
+scalar = data[5]
+test_dataset = tf.data.Dataset.from_tensor_slices((test[:,:12,:,:],test[:,-12:,:,:]))
+test_dataset = test_dataset.shuffle(buffer_size=1000).batch(hp.batch_size)
+test_dataset = test_dataset.prefetch(tf.data.experimental.AUTOTUNE)
+#load model sturctre
+stgmt = STGMT(d_model=hp.num_units,num_heads=hp.num_heads)
+#load weights with ckpt form
+checkpoint = tf.train.Checkpoint(stgmt=stgmt)
+checkpoint.restore(tf.train.latest_checkpoint(hp.ckpt_path)).expect_partial()
+print('The latest weight has been restored!')
+def evaluate(enc_inp, n2v, tms,model):
+  b, t, n, d = get_shape(enc_inp)
+  dec_inp = tf.ones((b, hp.output_len, n, d))
+  for step in range(dec_inp.shape[1]):
+    outs, _, _ = model(enc_inp, dec_inp, n2v, tms, if_te=True, if_se=True, if_ste=True,
+                       if_meta=True, training=False)
+    outs_ = outs.numpy()
+    dec_inp_ = dec_inp.numpy()
+    dec_inp_[:, step, :, :] = outs_[:, step, :, :]
+    dec_inp = tf.convert_to_tensor(dec_inp_, tf.float32)
+  return dec_inp  # ->(b,t,n,d)
+#eval
+mae = []
+rmse = []
+mape = []
+gts = []
+preds = []
+# errors = []
+count=0
+for batch,(enc_inp,gt) in enumerate(test_dataset):
+  b,t,n,d = get_shape(gt)
+  pred_ = evaluate(enc_inp,node2vec,tms,stgmt)
+  pred = scalar.inverse_transform(tf.reshape(pred_,[-1,1]))#btn,d
+  gt = scalar.inverse_transform(tf.reshape(gt,[-1,1]))
+  gt0 = np.reshape(np.transpose(np.reshape(gt,(-1,hp.output_len,n,d)),[0,2,1,3]),(-1,hp.output_len))
+  pred0 = np.reshape(np.transpose(np.reshape(pred,(-1,hp.output_len,n,d)),[0,2,1,3]),(-1,hp.output_len))
+  preds.append(pred0)
+  gts.append(gt0)
+  mae.append(cal_mae(gt0,pred0)[np.newaxis,:])
+  rmse.append(cal_rmse(gt0,pred0)[np.newaxis,:])
+  mape.append(toarray(cal_mape(gt0,pred0))[np.newaxis,:])
+
+mae = np.concatenate(mae,axis=0)
+rmse = np.concatenate(rmse,axis=0)
+mape = np.concatenate(mape,axis=0)
+gts = np.concatenate(gts,axis=0)
+preds = np.concatenate(preds,axis=0)
+print(np.mean(mae,axis=0))
+print('*'*30)
+print(np.mean(rmse,axis=0))
+print('*'*30)
+print(np.mean(mape,axis=0))
+print('*'*30)
+errors = [np.mean(mae,axis=0),np.mean(rmse,axis=0),np.mean(mape,axis=0)]
+df = pd.DataFrame(errors)
+df.to_csv('./gap.csv')
+writer = pd.ExcelWriter('ana.xlsx')
+df_gt = pd.DataFrame(gts[:1000,:])
+df_pred = pd.DataFrame(preds[:1000,:])
+df_gt.to_excel(writer,'sheet1')
+df_pred.to_excel(writer,'sheet2')
+writer.save()
