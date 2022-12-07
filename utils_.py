@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 import networkx as nx
 from sklearn.preprocessing import MinMaxScaler
 import pickle
+
 #building a graph
 def build_graph(path_file):
     """
@@ -81,10 +82,13 @@ def time_sim_matrix(datas):
     sim_init = np.zeros((num_sensors, num_sensors))
     for i in range(num_sensors):
         for j in range(num_sensors):
-            set_1 = datas[:288 * 7, i, :]#a week data, more data in not needed
-            set_2 = datas[:288 * 7, j, :]
-            time_sim = np.sum(set_1 * set_2) / (np.linalg.norm(set_1) * np.linalg.norm(set_2))
-            sim_init[i, j] = time_sim
+            if i!=j:
+                set_1 = datas[:24 * 7, i, :]#a week data, more data in not needed
+                set_2 = datas[:24 * 7, j, :]
+                # time_sim = np.sum(set_1 * set_2) / (np.linalg.norm(set_1) * np.linalg.norm(set_2))
+                time_sim = np.exp(-(np.linalg.norm(set_1-set_2)/min(np.linalg.norm(set_1),
+                np.linalg.norm(set_2))))
+                sim_init[i, j] = time_sim
     sim_init[np.where(sim_init <= hp.time_eplision)] = 0
     diag = np.identity(sim_init.shape[0])#add self-loop
     sim_init+=diag
@@ -97,71 +101,46 @@ def norm_adjmatrix(cal_matrix):
     :param cal_matrix: (N,N),after calculating the matrix
     :return: (N,N)
     """
+    for i in range(cal_matrix.shape[0]):
+        for j in range(cal_matrix.shape[1]):
+            if i==j:
+                cal_matrix[i,j]=0
     diag = np.identity(cal_matrix.shape[0])
     cal_matrix+=diag#add self-loop
     x_norm = cal_matrix/np.sum(cal_matrix,axis=1,keepdims=True)
     return x_norm
 
+def split_train_val_test(data):
+    """
+    shuffle the data sets
+    :param data: (s,t,n,d)
+    :return: train,val,test
+    """
+    np.random.seed(42)
+    shuffle_id = np.random.permutation(len(data))
+    train_datas_id = shuffle_id[:int(len(data)*0.6)]
+    val_datas_id = shuffle_id[int(len(data)*0.6):(int(len(data)*0.2)+int(len(data)*0.6))]
+    test_datas_id = shuffle_id[int(len(data)*0.2)+int(len(data)*0.6):]
+    return data[train_datas_id],data[val_datas_id],data[test_datas_id]
+
 def read_pkl(data_path):
     with open(data_path,'rb') as f:
         return pickle.load(f)
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-#并不能根据节点流量统计出路段流量，受到速度的影响
-# def get_coefficent_matrix(adj):
-#     """
-#     We construct the linear equation system because the number of unknowns (edges)
-#     is larger than the number of equations
-#     (nodes) and is therefore a hyperstable problem, solved by pseudoinversion
-#     :param adj: adjancy matrix,
-#     :return:(num_nodes,num_edges)
-#     """
-#     num_edges = len(adj[np.where(adj==1)])
-#     zeors_ = np.zeros((num_edges))
-#     count = 0
-#     a = []
-#     for i in range(adj.shape[0]):#each row
-#         zeros_0 = zeors_.copy()
-#         for j in range(adj.shape[1]):#each cloum
-#             if adj[i,j]!=0:
-#                 zeros_0[count]=1
-#                 count+=1
-#         a.append(zeros_0)
-#     return toarray(a)
-#
-# def solove_edges_flows(a,b):
-#     """
-#
-#     :param a:(num_nodes,num_edges)->(functions,x)
-#     :param b:(num_nodes,1)
-#     :return:(num_edges,1)
-#     """
-#     return np.linalg.pinv(a).dot(b)
-#
-# def inverse_flow_matrix(adj,x):
-#     """
-#     Assignment of Section Flow to Adjacent Matrix Solved
-#     :param adj:(N,N)
-#     :param x:the solve from solove_edges_flows(a,b)
-#     :return:adj matrix
-#     """
-#     adj[np.where(adj==1)]=np.squeeze(x)
-#     return adj
+#cal metrcis->(bn,t)->(t,)
+def cal_mae(gt,pred):
+    mae = np.abs(gt-pred)
+    return np.mean(mae,axis=0)
+def cal_rmse(gt,pred):
+    rmse = np.sqrt(np.mean(np.square(gt-pred),axis=0))
+    return rmse
+def cal_mape(gt,pred):
+    multi_time_step = []
+    for t in range(gt.shape[1]):
+        gt_t = gt[:,t]
+        pred_t = pred[:,t]
+        gt_t_se = gt_t[np.where(gt_t>=10)]
+        pred_t_se = pred_t[np.where(gt_t>=10)]
+        mape = np.mean(np.abs(gt_t_se-pred_t_se)/np.abs(gt_t_se))
+        multi_time_step.append(mape)
+    return multi_time_step
