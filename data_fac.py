@@ -17,6 +17,8 @@ import glob
 import os
 from utils_ import *
 
+
+np.random.seed(42)
 def get_data_path(dir,type):
     """
 
@@ -35,22 +37,22 @@ def read_flow_data(dir):
     :param dir: rootdir path like './data/PEMS04'
     :return: (points,sensors,flow)
     """
-    pe = np.load(get_data_path(dir,'npz'))
-    datas = pe['data'][:,:,0,None]#for pkl
-    # datas = np.load(get_data_path(dir,'npy'))#for NYC
+    # pe = np.load(get_data_path(dir,'npz'))
+    # datas = pe['data'][:,:,0,None]#for pkl
+    datas = np.load(get_data_path(dir,'npy'))#for NYC
     return datas
 
-def split_data_follow_day(datas,train_days,val_days):
-    """
-
-    :param datas: ((points,sensors,flow))
-    :param train_days: value
-    :param val_days: value
-    :return: train,val,test data
-    """
-    train_points = train_days*288#need to change 
-    val_points = (train_days+val_days)*288#need to change 
-    return [datas[:train_points,:,:],datas[train_points:val_points,:,:],datas[val_points:]]
+# def split_data_follow_day(datas,train_days,val_days):
+#     """
+#
+#     :param datas: ((points,sensors,flow))
+#     :param train_days: value
+#     :param val_days: value
+#     :return: train,val,test data
+#     """
+#     train_points = train_days*288#need to change
+#     val_points = (train_days+val_days)*288#need to change
+#     return [datas[:train_points,:,:],datas[train_points:val_points,:,:],datas[val_points:]]
 
 def get_datasets(datas):
     """
@@ -58,10 +60,11 @@ def get_datasets(datas):
     :param datas: train or val or test
     :return: train or val or test with shape(num_points,sequence_len,sensors,flow)
     """
+    sample_len = hp.input_len + hp.output_len
     datasets = []
-    for i in range(len(datas) - hp.input_len - hp.output_len):
-        datasets .append(datas[i:i + hp.input_len + hp.output_len])
-    data = toarray(datasets)
+    for i in range(len(datas) - sample_len):
+        datasets .append(datas[np.newaxis,i:i + sample_len])
+    data = np.concatenate(datasets,axis=0)
     return data
 def read_graph(dir):
     """
@@ -89,7 +92,7 @@ def build_adjmatrix(df):
     return adj_matrix
 
 
-def data_preprocessing(dir,train_day,val_day):
+def data_preprocessing(dir):
     """
 
     :param dir: like './data/PEMS04
@@ -101,9 +104,11 @@ def data_preprocessing(dir,train_day,val_day):
     # dir = './data/PEMS04'
     datas =read_flow_data(dir)
     datas_,sca = minmaxsca(datas)#sca is needed
-    datasets = split_data_follow_day(datas_,train_day,val_day)#a list
+    # datasets = split_data_follow_day(datas_,train_day,val_day)#a list
     #dynamic datasets results
-    all_datas = list(map(get_datasets,datasets))#the xs and ys,[[train],[val],[test]]
+    all_datas = get_datasets(datas_)
+    train, val, test = split_train_val_test(all_datas)
+    all_datas  = [train, val, test]
     #to get statics graph
     graph_df = read_graph(dir)
     adj_matrix = build_adjmatrix(graph_df)
@@ -128,9 +133,8 @@ def to_pkl(datas,pkl_path):
 
 
 def main():
-    all_datas = data_preprocessing(hp.data_08,44,5)#PEMS08->44,5;NYC->168,8;PEMS04->44,7(59)
-    to_pkl(all_datas,hp.pkl_08)
-
+    all_datas = data_preprocessing(hp.data_nyc)
+    to_pkl(all_datas,hp.NYC_)
 if __name__ == '__main__':
     main()
 
