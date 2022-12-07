@@ -21,7 +21,7 @@ The ability of spatial-temporal traffic prediction is crucial for urban computin
 ## Preliminary
 Before entering this project, you may need to configure the environment based on `Tensorflow2.x-gpu`.
 ```
-pip install node2vec
+!pip install node2vec
 ```
 
 ### Dataset
