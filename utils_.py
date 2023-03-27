@@ -144,3 +144,7 @@ def cal_mape(gt,pred):
         mape = np.mean(np.abs(gt_t_se-pred_t_se)/np.abs(gt_t_se))
         multi_time_step.append(mape)
     return multi_time_step
+def cal_wmape(gt,pred):
+    sum_gt = np.sum(gt,axis=0)
+    abs_diff = np.sum(np.abs(pred-gt),axis=0)
+    return abs_diff/sum_gt
